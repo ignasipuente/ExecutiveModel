@@ -97,6 +97,12 @@ export default function App() {
   nodesRef.current = nodes;
   edgesRef.current = edges;
 
+  // ReactFlow instance captured via onInit — used for fitView after load
+  const rfInstance = useRef(null);
+
+  // Hidden file input for the Load Canvas picker
+  const loadInputRef = useRef(null);
+
   // ── Safety-net: recalculate order after keyboard-delete ──────────────────
   // onConnect and the delete button handle explicit recalculations; this
   // effect covers React Flow's built-in keyboard deletion (Delete / Backspace).
@@ -221,6 +227,120 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, []);
 
+  // ── Save Canvas ──────────────────────────────────────────────────────────
+  // Serialises the full canvas state (nodes with positions + edges) so it can
+  // be restored perfectly later. Distinct from exportJSON (the Python map).
+  const saveCanvas = useCallback(() => {
+    const state = {
+      version: 1,
+      nodes: nodesRef.current.map((n) => ({
+        id: n.id,
+        position: n.position,
+        data: {
+          label: n.data.label,
+          inputs: n.data.inputs ?? [],
+          outputs: n.data.outputs ?? [],
+          order: n.data.order ?? null,
+        },
+      })),
+      edges: edgesRef.current.map((e) => ({
+        id: e.id,
+        source: e.source,
+        sourceHandle: e.sourceHandle,
+        target: e.target,
+        targetHandle: e.targetHandle,
+      })),
+    };
+
+    const blob = new Blob([JSON.stringify(state, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    Object.assign(document.createElement('a'), {
+      href: url,
+      download: 'canvas_state.json',
+    }).click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // ── Load Canvas ───────────────────────────────────────────────────────────
+  const loadCanvas = useCallback(
+    (e) => {
+      const file = e.target.files?.[0];
+      // Reset the input so the same file can be re-loaded if needed
+      e.target.value = '';
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const state = JSON.parse(evt.target.result);
+
+          if (!Array.isArray(state.nodes) || !Array.isArray(state.edges)) {
+            throw new Error('Invalid canvas_state.json: missing nodes or edges.');
+          }
+
+          // Reconstruct React Flow nodes
+          const loadedNodes = state.nodes.map((n) => ({
+            id: n.id,
+            type: 'modelNode',
+            position: n.position ?? { x: 0, y: 0 },
+            data: {
+              label: n.data?.label ?? 'Unnamed',
+              inputs: n.data?.inputs ?? [],
+              outputs: n.data?.outputs ?? [],
+              order: n.data?.order ?? null,
+              error: null,
+            },
+          }));
+
+          // Reconstruct React Flow edges with consistent styling
+          const loadedEdges = state.edges.map((e) => ({
+            id: e.id,
+            source: e.source,
+            sourceHandle: e.sourceHandle,
+            target: e.target,
+            targetHandle: e.targetHandle,
+            animated: true,
+            style: { stroke: '#6366f1' },
+          }));
+
+          // Advance nodeCounter past any loaded IDs so new blocks don't collide
+          const maxLoaded = Math.max(
+            0,
+            ...loadedNodes.map((n) => {
+              const m = n.id.match(/^node-(\d+)$/);
+              return m ? parseInt(m[1], 10) : 0;
+            })
+          );
+          if (maxLoaded >= nodeCounter) nodeCounter = maxLoaded + 1;
+
+          // Recompute execution order from the loaded graph
+          const sorted = topoSort(loadedNodes, loadedEdges);
+          const orderedNodes = sorted
+            ? applyOrder(loadedNodes, sorted)
+            : loadedNodes;
+
+          setNodes(orderedNodes);
+          setEdges(loadedEdges);
+
+          // Reset the safety-net counter so it doesn't skip the first recalc
+          prevCounts.current = {
+            n: orderedNodes.length,
+            e: loadedEdges.length,
+          };
+
+          // Fit the viewport to the restored canvas after React has painted
+          setTimeout(() => rfInstance.current?.fitView({ padding: 0.3 }), 50);
+        } catch (err) {
+          setCycleError(`Failed to load canvas: ${err.message}`);
+        }
+      };
+      reader.readAsText(file);
+    },
+    [setNodes, setEdges]
+  );
+
   // ── Render ───────────────────────────────────────────────────────────────
   const bannerVisible = Boolean(cycleError);
 
@@ -244,6 +364,46 @@ export default function App() {
             </svg>
             Add Block
           </button>
+
+          {/* Divider */}
+          <div className="w-px h-5 bg-slate-600" />
+
+          {/* Save Canvas */}
+          <button
+            onClick={saveCanvas}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-sm font-medium transition-colors cursor-pointer"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M17.293 4.293a1 1 0 010 1.414l-9 9a1 1 0 01-.39.242l-3 1a1 1 0 01-1.261-1.261l1-3a1 1 0 01.242-.391l9-9a1 1 0 011.414 0zM3 17h14a1 1 0 110 2H3a1 1 0 110-2z" />
+            </svg>
+            Save Canvas
+          </button>
+
+          {/* Load Canvas */}
+          <button
+            onClick={() => loadInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-sm font-medium transition-colors cursor-pointer"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.707 6.293a1 1 0 010 1.414L5.414 9H13a1 1 0 110 2H5.414l1.293 1.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Load Canvas
+          </button>
+          {/* Hidden file picker for Load Canvas */}
+          <input
+            ref={loadInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={loadCanvas}
+          />
+
+          {/* Divider */}
+          <div className="w-px h-5 bg-slate-600" />
 
           {/* Export JSON */}
           <button
@@ -298,6 +458,7 @@ export default function App() {
           onConnect={onConnect}
           isValidConnection={isValidConnection}
           nodeTypes={nodeTypes}
+          onInit={(instance) => { rfInstance.current = instance; }}
           fitView
           fitViewOptions={{ padding: 0.3 }}
         >
