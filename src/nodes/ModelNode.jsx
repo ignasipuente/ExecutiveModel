@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import { parseExcelFile } from '../utils/parseExcel';
+import { topoSort, applyOrder } from '../utils/topoSort';
 
 /**
  * ModelNode – represents a single Excel model file on the canvas.
@@ -13,7 +14,7 @@ import { parseExcelFile } from '../utils/parseExcel';
  *   error:   string | null  – set when a file fails validation
  */
 export default function ModelNode({ id, data }) {
-  const { setNodes } = useReactFlow();
+  const { setNodes, setEdges, getNodes, getEdges } = useReactFlow();
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -33,6 +34,22 @@ export default function ModelNode({ id, data }) {
       ),
     [id, setNodes]
   );
+
+  // ── Delete ───────────────────────────────────────────────────────────────
+  // Remove this node, all connected edges, then recalculate execution order.
+  const handleDelete = useCallback(() => {
+    const currentNodes = getNodes();
+    const currentEdges = getEdges();
+
+    const nextNodes = currentNodes.filter((n) => n.id !== id);
+    const nextEdges = currentEdges.filter(
+      (e) => e.source !== id && e.target !== id
+    );
+
+    const sorted = topoSort(nextNodes, nextEdges);
+    setNodes(sorted ? applyOrder(nextNodes, sorted) : nextNodes);
+    setEdges(nextEdges);
+  }, [id, getNodes, getEdges, setNodes, setEdges]);
 
   // ── Drag handlers ────────────────────────────────────────────────────────
 
@@ -59,11 +76,9 @@ export default function ModelNode({ id, data }) {
   const onDrop = async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    // Reset drag state immediately
     dragDepth.current = 0;
     setIsDragOver(false);
 
-    // Accept only the first .xlsx / .xls file in the drop
     const file = Array.from(e.dataTransfer.files ?? []).find((f) =>
       /\.(xlsx|xls)$/i.test(f.name)
     );
@@ -124,21 +139,38 @@ export default function ModelNode({ id, data }) {
           error && !isLoading ? 'bg-red-700' : 'bg-slate-700',
         ].join(' ')}
       >
+        {/* Execution-order badge */}
         {order != null && (
           <span className="flex shrink-0 items-center justify-center w-6 h-6 rounded-full bg-indigo-500 text-white text-xs font-bold">
             {order}
           </span>
         )}
 
+        {/* Label */}
         {isLoading ? (
-          <span className="text-slate-300 text-xs italic animate-pulse">
+          <span className="flex-1 text-slate-300 text-xs italic animate-pulse">
             Parsing…
           </span>
         ) : (
-          <span className="text-white font-semibold truncate" title={label}>
+          <span className="flex-1 text-white font-semibold truncate" title={label}>
             {label}
           </span>
         )}
+
+        {/* Delete button */}
+        <button
+          onClick={handleDelete}
+          title="Delete block"
+          className="shrink-0 text-slate-400 hover:text-red-400 transition-colors cursor-pointer"
+        >
+          <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fillRule="evenodd"
+              d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
       </div>
 
       {/* ── Error banner ──────────────────────────────────────────────── */}
@@ -168,7 +200,7 @@ export default function ModelNode({ id, data }) {
 
       {/* ── Port columns ──────────────────────────────────────────────── */}
       <div className="flex divide-x divide-slate-200">
-        {/* INPUTS */}
+        {/* INPUTS – target handles on the LEFT (indigo) */}
         <div className="flex-1 py-1">
           <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold px-3 pb-1">
             Inputs
@@ -185,10 +217,7 @@ export default function ModelNode({ id, data }) {
                   style={{ top: '50%', left: -8 }}
                   className="!w-3 !h-3 !bg-indigo-400 !border-2 !border-white"
                 />
-                <span
-                  className="pl-3 pr-2 text-slate-700 truncate"
-                  title={name}
-                >
+                <span className="pl-3 pr-2 text-slate-700 truncate" title={name}>
                   {name}
                 </span>
               </div>
@@ -196,7 +225,7 @@ export default function ModelNode({ id, data }) {
           )}
         </div>
 
-        {/* OUTPUTS */}
+        {/* OUTPUTS – source handles on the RIGHT (emerald/green) */}
         <div className="flex-1 py-1">
           <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold px-3 pb-1 text-right">
             Outputs
@@ -211,10 +240,7 @@ export default function ModelNode({ id, data }) {
                 key={name}
                 className="relative flex items-center justify-end h-7"
               >
-                <span
-                  className="pl-2 pr-3 text-slate-700 truncate"
-                  title={name}
-                >
+                <span className="pl-2 pr-3 text-slate-700 truncate" title={name}>
                   {name}
                 </span>
                 <Handle
